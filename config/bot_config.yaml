@@ -1,0 +1,31 @@
+# HFT Bot Configuration
+symbol: BTCUSDT                # par negociado
+paper_trading: true            # mantém em paper até finalizar testes
+initial_capital: 1000.0        # saldo inicial em USDT
+
+trading_params:
+  decision_interval: 0.5       # segundos entre cada iteração
+  min_signal_confluences: 2
+  gross_take_profit: 0.0008    # 0,08 % sobre o preço
+  gross_stop_loss: 0.0004      # 0,04 %
+  max_position_size: 500
+  kelly_fraction: 0.25
+
+risk:
+  max_drawdown: 0.15           # 15 % de rebaixamento máximo
+  max_positions: 3
+  max_exposure: 0.5
+  daily_loss_limit: 0.05
+  position_timeout: 600        # segundos até forçar saída
+
+alerts:
+  email:
+    enabled: false             # habilite e preencha SMTP se quiser e‑mails
+
+# --------------------------------------------------------------------------- #
+# Estrutura da estratégia em uso
+# --------------------------------------------------------------------------- #
+strategy: ma_crossover          # crossover de médias móveis
+strategy_params:
+  fast: 21                      # janela curta (30 candles)
+  slow: 207                     # janela longa (120 candles)
