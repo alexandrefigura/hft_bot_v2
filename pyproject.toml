@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hft-bot"
+version = "2.0.0"
+description = "Enterprise-ready High Frequency Trading Bot"
+readme = "README.md"
+authors = [
+    {name = "Alexandre Figura", email = "alexandre_figura@hotmail.com"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "aiofiles>=23.2.1,<24.0",
+    "aiohttp>=3.9.1,<4.0",
+    "numpy>=1.26.0,<1.27",
+    "pandas>=2.0.3,<3.0",
+    "pydantic>=2.5.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "prometheus-client>=0.19.0,<1.0",
+    "python-binance>=1.0.17,<2.0",
+    "python-dotenv>=1.0.0,<2.0",
+    "pyyaml>=6.0.1,<7.0",
+    "scipy>=1.11.4,<2.0",
+    "psutil>=5.9.0,<6.0",
+    "numba>=0.58.0,<1.0",
+    "scikit-learn>=1.3.0,<2.0",
+    "joblib>=1.3.0,<2.0",
+    "typer[all]>=0.9.0,<1.0",
+    "rich>=13.7.0,<14.0",
+    "httpx>=0.25.0,<1.0",
+    "structlog>=24.1.0,<25.0",
+    "orjson>=3.9.0,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.3",
+    "pytest-asyncio>=0.21.1",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.5.0",
+    "types-PyYAML>=6.0.0",
+    "types-aiofiles>=23.0.0",
+]
+optimization = [
+    "optuna>=3.0.0",
+    "plotly>=5.17.0",
+    "kaleido>=0.2.1",
+]
+backtesting = [
+    "vectorbt>=0.26.0",
+    "ta>=0.10.0",
+    "matplotlib>=3.7.0",
+    "yfinance>=0.2.0",
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.4.0",
+    "mkdocstrings[python]>=0.24.0",
+]
+
+[project.scripts]
+hft = "hft_bot.cli:app"
+hft-bot = "hft_bot.cli:app"  # Legacy alias
+
+[project.urls]
+Homepage = "https://github.com/Alexandre Figura/hft-bot"
+Documentation = "https://hft-bot.readthedocs.io"
+Repository = "https://github.com/Alexandre Figura/hft-bot.git"
+Issues = "https://github.com/Alexandre Figura/hft-bot/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hft_bot*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP", "B", "A", "C4", "SIM", "RUF"]
+ignore = ["E501", "B008"]
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=hft_bot --cov-report=term-missing --cov-report=html --cov-fail-under=85"
+
+[tool.coverage.run]
+source = ["hft_bot"]
+omit = ["*/tests/*", "*/cli/*"]

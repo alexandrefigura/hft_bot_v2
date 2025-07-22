@@ -1,0 +1,76 @@
+site_name: HFT Bot Documentation
+site_description: Enterprise-ready High Frequency Trading Bot
+site_author: Alexandre Figura
+site_url: https://hft-bot.readthedocs.io
+
+repo_name: Alexandre Figura/hft-bot
+repo_url: https://github.com/Alexandre Figura/hft-bot
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.snippets
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Configuration: getting-started/configuration.md
+      - Quick Start: getting-started/quickstart.md
+  - User Guide:
+      - Trading Strategies: guide/strategies.md
+      - Risk Management: guide/risk.md
+      - Backtesting: guide/backtesting.md
+      - Live Trading: guide/live-trading.md
+  - API Reference:
+      - Core: api/core.md
+      - Exchange: api/exchange.md
+      - Analytics: api/analytics.md
+      - Risk: api/risk.md
+  - Development:
+      - Contributing: development/contributing.md
+      - Architecture: development/architecture.md
+      - Testing: development/testing.md
+  - Changelog: changelog.md
