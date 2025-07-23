@@ -1,0 +1,18 @@
+{
+  "model_type": "lgb",
+  "train_date": "2025-07-23T10:08:46.356238",
+  "test_accuracy": 0.75,
+  "best_params": {},
+  "best_cv": null,
+  "classes": [
+    "ema_20_50",
+    "ema_30_90",
+    "ema_50_150",
+    "sma_15_60",
+    "sma_30_120",
+    "sma_50_200"
+  ],
+  "n_features": 27,
+  "train_samples": 416,
+  "test_samples": 132
+}

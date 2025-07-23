@@ -1,0 +1,50 @@
+returns:
+  1h:
+    periods: 60
+    enabled: true
+  1d:
+    periods: 1440
+    enabled: true
+volatility:
+  atr:
+    length: 14
+    enabled: true
+  parkinson:
+    length: 20
+    enabled: true
+  std_20:
+    length: 20
+    enabled: true
+momentum:
+  rsi:
+    length: 14
+    enabled: true
+  roc:
+    length: 5
+    enabled: true
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+    enabled: true
+trend:
+  sma_50:
+    length: 50
+    enabled: true
+  sma_200:
+    length: 200
+    enabled: true
+  ema_20:
+    length: 20
+    enabled: true
+  linreg_slope:
+    length: 50
+    enabled: true
+volume:
+  obv:
+    enabled: true
+  vwap_dev:
+    enabled: true
+  volume_sma:
+    length: 20
+    enabled: true

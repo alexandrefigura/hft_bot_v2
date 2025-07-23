@@ -1,0 +1,23 @@
+{
+  "model_type": "rf",
+  "train_date": "2025-07-23T10:04:26.945366",
+  "test_accuracy": 0.7045454545454546,
+  "best_params": {
+    "model__max_depth": null,
+    "model__min_samples_leaf": 1,
+    "model__n_estimators": 400,
+    "selector__k": 27
+  },
+  "best_cv": 0.6434782608695652,
+  "classes": [
+    "ema_20_50",
+    "ema_30_90",
+    "ema_50_150",
+    "sma_15_60",
+    "sma_30_120",
+    "sma_50_200"
+  ],
+  "n_features": 27,
+  "train_samples": 416,
+  "test_samples": 132
+}

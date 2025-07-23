@@ -1,0 +1,15 @@
+{
+  "model_type": "xgb",
+  "test_accuracy": 0.7651515151515151,
+  "classes": [
+    "ema_20_50",
+    "ema_30_90",
+    "ema_50_150",
+    "sma_15_60",
+    "sma_30_120",
+    "sma_50_200"
+  ],
+  "n_features": 27,
+  "train_samples": 416,
+  "test_samples": 132
+}

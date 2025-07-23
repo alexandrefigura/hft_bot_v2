@@ -1,190 +1,319 @@
 #!/usr/bin/env python3
 """
-Gera dataset supervisionado (features ➜ best_strategy) para treinar
-um selector de estratégias.
+Dataset Builder v4 – geração de amostras supervisionadas para o *Strategy Selector*
+=================================================================================
 
-Exemplo:
-    python scripts\\build_training_set.py data\\BTCUSDT_15m.csv ^
-           --out datasets\\selector_15m.csv ^
-           --window 30 --step 7 --metric sharpe_ratio
+Principais melhorias
+-------------------
+1. **Estratégias parametrizadas por CSV** – passe quantas quiser via ``--param-file``
+2. **Features dirigidas por YAML**        – ligue/desligue indicadores sem tocar no código
+3. **Compatível com vários time‑frames** – defina ``--timeframe 1min|5min|...``
+4. **Métricas Sharpe ou Retorno Total**  – escolha em ``--metric``
+5. **Remoção automática de baixa variância** – evita lixo no dataset
+
+Exemplo de uso (CMD/PowerShell)::
+
+    python scripts\build_training_set_v4.py data\BTCUSDT_1m.csv \
+           --window 10 --step 2 --timeframe 1min --metric sharpe_ratio \
+           --param-file params_ma.csv \
+           --features-config features.yaml \
+           --out datasets\selector_1m_v4.csv
+
+Arquivos auxiliares
+~~~~~~~~~~~~~~~~~~~
+``params_ma.csv`` (exemplo)::
+
+    name,fast,slow
+    ma_20_50,20,50
+    ma_30_120,30,120
+    ma_50_200,50,200
+
+``features.yaml`` (exemplo completo encontra‑se em ``--create-features-config``)
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import uuid
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 import pandas_ta as ta
+import yaml
+from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
 from hft_bot.backtesting.engine import BacktestEngine
 
-# --------------------------------------------------------------------------- #
-# Mapas de parâmetros das variantes de SMA‑crossover
-# --------------------------------------------------------------------------- #
-STRATEGIES: Dict[str, Dict[str, int]] = {
-    "sma_20_50":   {"fast": 20,  "slow": 50},
-    "sma_30_120":  {"fast": 30,  "slow": 120},
-    "sma_50_200":  {"fast": 50,  "slow": 200},
-    "sma_10_30":   {"fast": 10,  "slow": 30},
-    "sma_15_60":   {"fast": 15,  "slow": 60},
+# ----------------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+log = logging.getLogger(__name__)
+
+# ----------------------------------------------------------------------------
+# Time‑frame helpers
+# ----------------------------------------------------------------------------
+TF_MIN = {
+    "1min": 1,
+    "5min": 5,
+    "15min": 15,
+    "30min": 30,
+    "1h": 60,
+    "2h": 120,
+    "4h": 240,
+    "1d": 1440,
 }
 
-# --------------------------------------------------------------------------- #
-# Funções auxiliares
-# --------------------------------------------------------------------------- #
-def _prepare_price_df(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
+def periods_to_candles(periods: int, timeframe: str) -> int:
+    return max(1, periods // TF_MIN[timeframe])
 
-    if "timestamp" not in df.columns and "open_time" in df.columns:
-        df = df.rename(columns={"open_time": "timestamp"})
-    if "close" not in df.columns and "price" in df.columns:
-        df = df.rename(columns={"price": "close"})
+# ----------------------------------------------------------------------------
+# Feature configuration via YAML
+# ----------------------------------------------------------------------------
+@dataclass
+class FeatureBlock:
+    params: Dict[str, Any]
+    enabled: bool = True
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp").sort_index()
+@dataclass
+class FeatureConfig:
+    returns: Dict[str, FeatureBlock] = field(default_factory=dict)
+    volatility: Dict[str, FeatureBlock] = field(default_factory=dict)
+    momentum: Dict[str, FeatureBlock] = field(default_factory=dict)
+    trend: Dict[str, FeatureBlock] = field(default_factory=dict)
+    volume: Dict[str, FeatureBlock] = field(default_factory=dict)
 
-    if "close" not in df.columns:
-        raise ValueError("CSV precisa conter coluna 'close'.")
-    return df
-
-
-def slice_df(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
-    return df.loc[(df.index >= start) & (df.index < end)]
-
-
-def compute_features(df):
-    pct = df["close"].pct_change().dropna()
-    last = df["close"].iloc[-1]
-
-    # indicadores pandas‑ta
-    rsi14  = ta.rsi(df["close"], length=14).iloc[-1]
-    atr14  = ta.atr(df["high"], df["low"], df["close"], length=14).iloc[-1]
-    macd   = ta.macd(df["close"]).iloc[-1, 0]           # coluna MACD
-    slope  = ta.linreg(df["close"], length=20).iloc[-1] # slope correto
-
-    sma200 = df["close"].rolling(200).mean().iloc[-1] if len(df) >= 200 else np.nan
-
-    return {
-        "ret_1d":  float(last / df["close"].iloc[-1440] - 1) if len(df) > 1440 else 0.0,
-        "vol_1d":  float(pct[-1440:].std()) if len(pct) > 1440 else float(pct.std()),
-        "vol_1h":  float(pct[-60:].std())   if len(pct) > 60   else float(pct.std()),
-        "sma_ratio": float(last / sma200) if not np.isnan(sma200) else 1.0,
-        "rsi14":  float(rsi14),
-        "atr14":  float(atr14),
-        "macd":   float(macd),
-        "slope_20": float(slope),
-        "dow":    df.index[-1].dayofweek,
-        "hour":   df.index[-1].hour,
-    }
-
-
-async def evaluate_strategy(df_idx: pd.DataFrame,
-                            params: Dict[str, int],
-                            metric: str) -> float:
-    """Executa o motor; recoloca o índice como coluna 'timestamp'."""
-    df = df_idx.reset_index().rename_axis(None, axis=1)   # <-- ajuste crucial
-    cfg = {"strategy_params": params}
-    eng = BacktestEngine(config=cfg, initial_capital=1_000)
-    res = await eng.run(df)
-    return res[metric]
-
-
-async def build_dataset(data_csv: str,
-                        out_csv: str,
-                        window_days: int,
-                        step_days: int,
-                        metric: str):
-    price_df = _prepare_price_df(data_csv)
-
-    rows: List[Dict[str, float]] = []
-    window = timedelta(days=window_days)
-    step = timedelta(days=step_days)
-
-    t_start = price_df.index.min() + window
-    t_end   = price_df.index.max()
-    total_windows = int((t_end - t_start) / step) + 1
-
-    cur = t_start
-    pbar = tqdm(total=total_windows, desc="janelas", unit="window")
-
-    while cur <= t_end:
-        win_df = slice_df(price_df, cur - window, cur)
-
-        if len(win_df) < 300:
-            cur += step
-            pbar.update(1)
-            continue
-
-        # avalia todas as variantes
-        scores = {
-            name: await evaluate_strategy(win_df, params, metric)
-            for name, params in STRATEGIES.items()
+    @classmethod
+    def from_yaml(cls, path: Optional[str]) -> "FeatureConfig":
+        if path and Path(path).exists():
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+            return cls(**{k: {kk: FeatureBlock(**vv) for kk, vv in v.items()} for k, v in data.items()})
+        log.warning("Arquivo de configuração não encontrado – usando default simplificado")
+        # fallback mínimo
+        base = {
+            "returns": {"1h": FeatureBlock({"periods": 60})},
+            "volatility": {"atr": FeatureBlock({"length": 14})},
+            "momentum": {"rsi": FeatureBlock({"length": 14})},
+            "trend": {"sma_50": FeatureBlock({"length": 50}), "sma_200": FeatureBlock({"length": 200})},
         }
-        best = max(scores, key=scores.get)
+        return cls(**base)
+
+# ----------------------------------------------------------------------------
+# Feature extraction
+# ----------------------------------------------------------------------------
+
+def _safe(fn, *args, default=np.nan, **kwargs):
+    try:
+        out = fn(*args, **kwargs)
+        if isinstance(out, (pd.Series, pd.DataFrame)):
+            return out.iloc[-1]
+        return out
+    except Exception as e:
+        log.debug("Indicator error: %s", e)
+        return default
+
+
+def make_features(df: pd.DataFrame, cfg: FeatureConfig, timeframe: str) -> Dict[str, float]:
+    closing = df["close"]
+    high, low, vol = df["high"], df["low"], df["volume"]
+    feats: Dict[str, float] = {}
+
+    # returns
+    for name, blk in cfg.returns.items():
+        if not blk.enabled:
+            continue
+        pcs = closing.pct_change().dropna()
+        n = periods_to_candles(blk.params["periods"], timeframe)
+        feats[f"ret_{name}"] = float(pcs[-n:].sum()) if len(pcs) >= n else float(pcs.sum())
+
+    # volatility
+    for name, blk in cfg.volatility.items():
+        if not blk.enabled:
+            continue
+        if name == "atr":
+            feats[f"atr_{blk.params['length']}"] = _safe(ta.atr, high, low, closing, length=blk.params["length"])
+        elif name.startswith("std"):
+            l = blk.params["length"]
+            feats[f"std_{l}"] = float(closing.rolling(l).std().iloc[-1])
+
+    # momentum
+    for name, blk in cfg.momentum.items():
+        if not blk.enabled:
+            continue
+        if name == "rsi":
+            feats[f"rsi_{blk.params['length']}"] = _safe(ta.rsi, closing, length=blk.params["length"])
+        elif name == "roc":
+            feats[f"roc_{blk.params['length']}"] = _safe(ta.roc, closing, length=blk.params["length"])
+
+    # trend
+    for name, blk in cfg.trend.items():
+        if not blk.enabled:
+            continue
+        if name.startswith("sma"):
+            l = blk.params["length"]
+            sma = closing.rolling(l).mean().iloc[-1]
+            feats[f"{name}_rel"] = float(closing.iloc[-1] / sma) if sma != 0 else 1.0
+
+    # volume
+    for name, blk in cfg.volume.items():
+        if not blk.enabled:
+            continue
+        if name == "obv":
+            obv = _safe(ta.obv, closing, vol)
+            obv_mean = _safe(ta.obv, closing, vol).rolling(20).mean()
+            obv_mean = obv_mean.iloc[-1] if not obv_mean.empty else np.nan
+            feats["obv_norm"] = float(obv / obv_mean) if obv_mean not in (0, np.nan) else 1.0
+
+    # drop NaNs
+    return {k: v for k, v in feats.items() if not pd.isna(v)}
+
+# ----------------------------------------------------------------------------
+# Strategy evaluation
+# ----------------------------------------------------------------------------
+async def backtest(df: pd.DataFrame, params: Dict[str, Any], metric: str) -> float:
+    try:
+        res = await BacktestEngine({"strategy_params": params}).run(df)
+        return res.get(metric, -np.inf)
+    except Exception as e:
+        log.debug("Backtest error: %s", e)
+        return -np.inf
+
+# ----------------------------------------------------------------------------
+# Core builder
+# ----------------------------------------------------------------------------
+async def build_dataset(
+    data_csv: str,
+    out_csv: str,
+    window: int,
+    step: int,
+    metric: str,
+    param_file: str,
+    feat_cfg_path: Optional[str],
+    timeframe: str,
+    min_var: float,
+):
+    df_price = pd.read_csv(data_csv, parse_dates=["timestamp"], index_col="timestamp")
+    log.info("%s candles de %s a %s", len(df_price), df_price.index.min(), df_price.index.max())
+
+    cfg = FeatureConfig.from_yaml(feat_cfg_path)
+
+    # carrega strategies
+    df_params = pd.read_csv(param_file)
+    strategies = {row["name"]: row.drop("name").to_dict() for _, row in df_params.iterrows()}
+    log.info("%d estratégias carregadas", len(strategies))
+
+    rows: List[Dict[str, Any]] = []
+    win_delta, step_delta = timedelta(days=window), timedelta(days=step)
+    cur = df_price.index.min() + win_delta
+    total = int((df_price.index.max() - cur) / step_delta) + 1
+    pbar = tqdm(total=total, desc="Janelas")
+
+    while cur <= df_price.index.max():
+        win_df = df_price[cur - win_delta : cur]
+        if len(win_df) < 300:
+            cur += step_delta; pbar.update(1); continue
+
+        feats = make_features(win_df, cfg, timeframe)
+        if not feats:
+            cur += step_delta; pbar.update(1); continue
+
+        results = {n: s for n, s in zip(strategies, await asyncio.gather(*[backtest(win_df.copy(), p, metric) for p in strategies.values()]))}
+        valid = {k: v for k, v in results.items() if v != -np.inf}
+        if not valid:
+            cur += step_delta; pbar.update(1); continue
+        best = max(valid, key=valid.get)
 
         rows.append({
             "row_id": uuid.uuid4().hex,
             "ts_end": cur,
-            **compute_features(win_df),
+            **feats,
             "best_strategy": best,
+            f"best_{metric}": valid[best],
         })
-        print(f"✓ janela até {cur:%Y-%m-%d} — melhor: {best:<10} "
-              f"({len(rows):3d} amostras)")
-
-        cur += step
-        pbar.update(1)
+        if len(rows) % 50 == 0:
+            log.info("%d linhas – última janela %s best=%s %.3f", len(rows), cur.date(), best, valid[best])
+        cur += step_delta; pbar.update(1)
 
     pbar.close()
+    df_out = pd.DataFrame(rows)
+
+    # remove baixa variância
+    if len(df_out) > 2 and min_var > 0:
+        feat_cols = [c for c in df_out.columns if c not in ("row_id", "ts_end", "best_strategy") and not c.startswith("best_")]
+        std = np.var(StandardScaler().fit_transform(df_out[feat_cols]), axis=0)
+        low = [c for c, v in zip(feat_cols, std) if v < min_var]
+        if low:
+            log.info("Removendo %d features baixa var: %s", len(low), low)
+            df_out.drop(columns=low, inplace=True)
+
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(out_csv, index=False)
-    print(f"\nDataset salvo em {out_csv} ({len(rows)} linhas)")
+    df_out.to_csv(out_csv, index=False)
+    log.info("Dataset salvo em %s (%d linhas, %d colunas)", out_csv, len(df_out), df_out.shape[1])
+    log.info("Distribuição: %s", df_out["best_strategy"].value_counts().to_dict())
 
-
-# --------------------------------------------------------------------------- #
+# ----------------------------------------------------------------------------
 # CLI
-# --------------------------------------------------------------------------- #
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Gera dataset para StrategySelector (SMA‑crossover)")
-    p.add_argument("data_csv", help="CSV de preços (timestamp, close)")
-    p.add_argument("--out", default="datasets/selector_training.csv")
-    p.add_argument("--window", type=int, default=5, help="dias")
-    p.add_argument("--step",   type=int, default=2, help="dias")
-    p.add_argument("--metric",
-                   choices=["sharpe_ratio", "total_return"],
-                   default="sharpe_ratio")
-    # 🔽 NOVAS FLAGS
-    p.add_argument("--fast", default="", help="ex.: 5,10,15,20")
-    p.add_argument("--slow", default="", help="ex.: 30,60,120,200")
+# ----------------------------------------------------------------------------
+
+def default_yaml(path: str):
+    """Gera YAML de referência."""
+    samp = {
+        "returns": {
+            "1h": {"periods": 60, "enabled": True},
+            "1d": {"periods": 1440, "enabled": True},
+        },
+        "volatility": {"atr": {"length": 14, "enabled": True}},
+        "momentum": {"rsi": {"length": 14, "enabled": True}},
+        "trend": {"sma_50": {"length": 50, "enabled": True}, "sma_200": {"length": 200, "enabled": True}},
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(samp, f, sort_keys=False)
+    log.info("Exemplo salvo em %s", path)
+
+
+def parse() -> argparse.Namespace:
+    p = argparse.ArgumentParser("Dataset Builder v4")
+    p.add_argument("csv_in", help="CSV de preços")
+    p.add_argument("--out", required=True, help="CSV de saída")
+    p.add_argument("--window", type=int, default=10, help="Janela em dias")
+    p.add_argument("--step", type=int, default=2, help="Passo em dias")
+    p.add_argument("--metric", choices=["sharpe_ratio", "total_return"], default="sharpe_ratio")
+    p.add_argument("--param-file", required=True, help="CSV de parâmetros das estratégias")
+    p.add_argument("--features-config", help="YAML de features")
+    p.add_argument("--create-features-config", help="Cria YAML exemplo e sai")
+    p.add_argument("--timeframe", choices=list(TF_MIN), default="1min")
+    p.add_argument("--min-variance", type=float, default=0.01)
     return p.parse_args()
 
-# ------------- GERAR LISTA DE ESTRATÉGIAS --------------
-def build_param_grid(args: argparse.Namespace) -> dict[str, dict]:
-    """Retorna dict {nome: {'fast': X, 'slow': Y}}"""
-    # se usuário passar --fast/--slow = gera grade, senão defaults
-    if args.fast and args.slow:
-        fasts = [int(x) for x in args.fast.split(",")]
-        slows = [int(x) for x in args.slow.split(",")]
-        combos = ((f, s) for f, s in product(fasts, slows) if f < s)
-    else:  # defaults
-        combos = [(10, 30), (20, 50), (30, 120), (50, 200)]
 
-    out: dict[str, dict] = {}
-    for f, s in combos:
-        out[f"sma_{f}_{s}"] = {"fast": f, "slow": s}
-    return out
-
-
-def main() -> None:
-    args = parse_args()
-    asyncio.run(build_dataset(args.data_csv, args.out,
-                              args.window, args.step, args.metric))
+def main():
+    args = parse()
+    if args.create_features_config:
+        default_yaml(args.create_features_config)
+        return
+    asyncio.run(
+        build_dataset(
+            data_csv=args.csv_in,
+            out_csv=args.out,
+            window=args.window,
+            step=args.step,
+            metric=args.metric,
+            param_file=args.param_file,
+            feat_cfg_path=args.features_config,
+            timeframe=args.timeframe,
+            min_var=args.min_variance,
+        )
+    )
 
 
 if __name__ == "__main__":
